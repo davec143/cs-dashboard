@@ -31,6 +31,8 @@ def create_app(store=None, testing=False):
         if request.path.startswith('/api/') and request.path not in ('/api/login', '/api/session'):
             if not g.user:
                 return jsonify(error='sign_in_required'), 401
+            if request.path.startswith(('/api/users', '/api/reviews', '/api/system')) and g.user['role'] != 'admin':
+                return jsonify(error='admin_required'), 403
             if request.method == 'POST' and not safe_compare(request.headers.get('X-QA-CSRF', ''), g.user['csrf']):
                 return jsonify(error='csrf_required'), 403
             if request.method == 'POST' and request.path not in ('/api/logout', '/api/password') and g.user['role'] != 'admin':
@@ -49,7 +51,10 @@ def create_app(store=None, testing=False):
         if isinstance(exc, HTTPException):
             return jsonify(error=exc.name.lower().replace(' ', '_')), exc.code
         if isinstance(exc, (ValueError, KeyError, TypeError)):
-            return jsonify(error='invalid_request'), 400
+            known = {'invalid_user','invalid_enabled','administrator_required','cannot_change_own_access','last_enabled_admin',
+                'current_evaluation_required','review_decision_and_note_required','evidence_checks_required_before_approval',
+                'password_must_be_16_to_256_characters','invalid_current_password'}
+            return jsonify(error=str(exc) if str(exc) in known else 'invalid_request'), 400
         # Do not include database URLs, provider responses, or customer content in logs.
         app.logger.error('Request failed: %s', type(exc).__name__)
         return jsonify(error='storage_or_service_unavailable'), 503
@@ -80,9 +85,14 @@ def create_app(store=None, testing=False):
     def ready():
         beat = float(store.setting('worker_heartbeat') or 0)
         reconciled = float(store.setting('last_reconcile') or 0)
-        ready = (os.environ.get('QA_PROCESSING_ENABLED') == 'true' and time.time()-beat < 120
+        enabled = os.environ.get('QA_PROCESSING_ENABLED') == 'true'
+        backup_at = float(store.setting('backup_completed_at') or 0)
+        backups_ok = os.environ.get('QA_BACKUPS_REQUIRED') != 'true' or (
+            time.time()-backup_at < 36*3600 and not store.setting('backup_error'))
+        operations_ok = time.time()-beat < 180 and backups_ok
+        ready = (enabled and time.time()-beat < 180
                  and time.time()-reconciled < 7200 and not store.setting('reconcile_error'))
-        return jsonify(ready=ready), 200 if ready else 503
+        return jsonify(ready=ready, processing_enabled=enabled, operations_ok=operations_ok), 200 if ready else 503
 
     @app.get('/api/session')
     def session():
@@ -124,8 +134,11 @@ def create_app(store=None, testing=False):
             for e in pilot['evaluations']:
                 e.pop('turns', None)
                 e.pop('result', None)
+                e.pop('human_review', None)
             pilot['tasks'] = []
         facts, manifest = history()
+        if g.user['role'] == 'viewer':
+            manifest = []
         return jsonify(audit=facts, legacy=manifest,
                        pilot=pilot, demo=False, audited_on='2026-10-04',
                        processing_enabled=os.environ.get('QA_PROCESSING_ENABLED') == 'true')
@@ -141,6 +154,8 @@ def create_app(store=None, testing=False):
         if kind not in EVENTS:
             return jsonify(ignored=True)
         source = data.get('data') or {}
+        if not isinstance(source, dict):
+            raise ValueError('invalid_event_data')
         if kind == 'transcription.created':
             source = {'id':source.get('call_id')}
         meta = minimal_call(source)
@@ -156,6 +171,62 @@ def create_app(store=None, testing=False):
         if user is None:
             return jsonify(error='account_already_exists'), 409
         return jsonify(user), 201
+
+    @app.get('/api/users')
+    def users():
+        return jsonify(users=auth.list_users(store))
+
+    @app.post('/api/users/access')
+    def user_access():
+        data = body()
+        user = auth.update_user_access(store, data.get('email'), data.get('role'), data.get('enabled'), g.user['email'])
+        return (jsonify(user), 200) if user else (jsonify(error='account_not_found'), 404)
+
+    @app.post('/api/users/reset-password')
+    def user_reset():
+        user = auth.reset_user_password(store, body().get('email'), g.user['email'])
+        return (jsonify(user), 200) if user else (jsonify(error='account_not_found'), 404)
+
+    @app.post('/api/reviews')
+    def review_evaluation():
+        data = body()
+        rid = store.review_evaluation(int(data['evaluation_id']), data.get('decision'), data.get('note'), g.user['email'])
+        return jsonify(id=rid), 201
+
+    @app.get('/api/reviews/<int:evaluation_id>')
+    def review_history(evaluation_id):
+        return jsonify(reviews=store.review_history(evaluation_id))
+
+    @app.get('/api/system')
+    def system():
+        try:
+            worker_config = json.loads(store.setting('worker_configuration') or '{}')
+        except ValueError:
+            worker_config = {}
+        now = time.time()
+        heartbeat = float(store.setting('worker_heartbeat') or 0)
+        reconcile_at = float(store.setting('last_reconcile') or 0)
+        enabled = os.environ.get('QA_PROCESSING_ENABLED') == 'true'
+        with store.connect() as conn:
+            failed = conn.execute("SELECT COUNT(*) FROM jobs WHERE state='error'").fetchone()[0]
+            overdue = conn.execute("SELECT COUNT(*) FROM jobs WHERE state='queued' AND due<?", (now-900,)).fetchone()[0]
+        alerts = []
+        if now-heartbeat >= 180:
+            alerts.append('Worker has not reported in the last 3 minutes.')
+        if enabled and (now-reconcile_at >= 7200 or store.setting('reconcile_error')):
+            alerts.append('Call reconciliation needs attention.')
+        if failed:
+            alerts.append(f'{failed} calls failed processing. Inspect and retry after resolving the cause.')
+        if overdue:
+            alerts.append(f'{overdue} queued calls are more than 15 minutes overdue.')
+        if store.setting('backup_error'):
+            alerts.append('The latest backup or restore drill failed. Inspect the backup service before relying on recovery.')
+        backup_at = float(store.setting('backup_completed_at') or 0)
+        if os.environ.get('QA_BACKUPS_REQUIRED') == 'true' and now-backup_at >= 36*3600:
+            alerts.append('No verified database backup has completed in the last 36 hours.')
+        return jsonify(worker_configuration=worker_config, webhook_configured=bool(os.environ.get('AIRCALL_WEBHOOK_TOKEN')),
+            processing_enabled=enabled, alerts=alerts, backup_completed_at=store.setting('backup_completed_at'),
+            restore_verified_at=store.setting('restore_verified_at'))
 
     @app.post('/api/coaching')
     def coaching():

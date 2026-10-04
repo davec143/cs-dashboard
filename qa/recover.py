@@ -32,7 +32,8 @@ def existing_ids(path):
 
 
 def plan_recovery(aircall, config, known, start, end, pause=time.sleep):
-    if not 0 <= start < end or end - start > 31 * 86400:
+    if (type(start) not in (int, float) or type(end) not in (int, float)
+        or not 0 <= start < end <= 253402300799 or end - start > 31 * 86400):
         raise ValueError('Choose an increasing range of at most 31 days.')
     enabled = {str(k) for k, v in config.get('agents', {}).items() if v.get('enabled')}
     if not enabled:
@@ -41,12 +42,17 @@ def plan_recovery(aircall, config, known, start, end, pause=time.sleep):
     counts = {'existing': 0, 'out_of_scope': 0, 'not_finished': 0}
     for page in range(1, 201):
         response = aircall.calls_page(start, end, page)
+        if not isinstance(response, dict):
+            raise ProviderError('recovery_invalid_page')
         calls = response.get('calls')
         meta = response.get('meta')
         if not isinstance(calls, list) or not isinstance(meta, dict) or 'next_page_link' not in meta:
             raise ProviderError('recovery_invalid_page')
         for call in calls:
-            item = minimal_call(call)
+            try:
+                item = minimal_call(call)
+            except ValueError:
+                raise ProviderError('recovery_invalid_call') from None
             cid = item['id']
             if cid in seen:
                 continue
