@@ -13,7 +13,7 @@ from qa.web import create_app
 class WebTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory()
-        self.store=Store(Path(self.tmp.name)/'test.db')
+        self.store=self.make_store()
         seed(self.store)
         self.env=patch.dict(os.environ,{'QA_PROCESSING_ENABLED':'false','QA_AUDIT_DIR':self.tmp.name})
         self.env.start()
@@ -21,6 +21,8 @@ class WebTests(unittest.TestCase):
         create_user(self.store,'viewer@example.com',generate_password_hash('ViewTestPassword123!'),'viewer')
         self.app=create_app(self.store,testing=True)
         self.client=self.app.test_client()
+    def make_store(self):
+        return Store(Path(self.tmp.name)/'test.db')
     def tearDown(self):
         self.env.stop();self.tmp.cleanup()
     def login(self,email='lead@example.com',password='LeadTestPassword123!'):
