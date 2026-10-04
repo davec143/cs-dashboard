@@ -149,6 +149,14 @@ def create_app(store=None, testing=False):
         added = store.enqueue(meta, key, kind)
         return jsonify(accepted=True, duplicate=not added)
 
+    @app.post('/api/users')
+    def create_user():
+        data = body()
+        user = auth.provision_user(store, data.get('email', ''), data.get('role', ''), g.user['email'])
+        if user is None:
+            return jsonify(error='account_already_exists'), 409
+        return jsonify(user), 201
+
     @app.post('/api/coaching')
     def coaching():
         data = body()

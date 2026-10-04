@@ -19,6 +19,24 @@ def create_user(store, email, password_hash, role='admin'):
                      (email, password_hash, role, time.time()))
 
 
+def provision_user(store, email, role, actor):
+    """Create a named account; return its initial password exactly once."""
+    email = str(email).strip().lower()
+    if not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', email) or len(email) > 254 or role not in ('admin', 'viewer'):
+        raise ValueError('invalid_user')
+    password = secrets.token_urlsafe(24)
+    hashed = generate_password_hash(password)
+    with store.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        if conn.execute('SELECT 1 FROM users WHERE email=?', (email,)).fetchone():
+            return None
+        conn.execute('INSERT INTO users(email,password_hash,role,created) VALUES (?,?,?,?)',
+                     (email, hashed, role, time.time()))
+        conn.execute('INSERT INTO audit_log(actor,action,subject,detail,created) VALUES (?,?,?,?,?)',
+                     (actor, 'account.created', email, '{"role":"' + role + '"}', time.time()))
+    return {'email':email, 'role':role, 'initial_password':password}
+
+
 def identity(store, token):
     if not token:
         return None

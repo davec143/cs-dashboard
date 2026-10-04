@@ -78,3 +78,31 @@ class WebTests(unittest.TestCase):
         self.assertIn('Secure',r.headers['Set-Cookie']);self.assertIn('HttpOnly',r.headers['Set-Cookie'])
         self.assertIn("frame-ancestors 'none'",r.headers['Content-Security-Policy'])
         self.assertEqual(self.client.post('/api/login',data='x'*1_000_001,content_type='application/json').status_code,413)
+
+    def test_admin_can_provision_unique_account_and_it_can_sign_in(self):
+        h=self.login()
+        r=self.client.post('/api/users',headers=h,json={'email':'new-admin@example.com','role':'admin'})
+        self.assertEqual(r.status_code,201)
+        self.assertGreaterEqual(len(r.json['initial_password']),24)
+        password=r.json['initial_password']
+        duplicate=self.client.post('/api/users',headers=h,json={'email':'new-admin@example.com','role':'viewer'})
+        self.assertEqual(duplicate.status_code,409)
+        self.client.post('/api/logout',json={},headers=h)
+        self.login('new-admin@example.com',password)
+        self.assertEqual(self.client.get('/api/session').json['role'],'admin')
+        with self.store.connect() as conn:
+            row=conn.execute("SELECT actor,subject,detail FROM audit_log WHERE action='account.created'").fetchone()
+            self.assertEqual(row['actor'],'lead@example.com')
+            self.assertNotIn(password,row['detail'])
+    def test_user_provisioning_requires_admin_and_csrf(self):
+        payload={'email':'new@example.com','role':'admin'}
+        self.assertEqual(self.client.post('/api/users',json=payload).status_code,401)
+        h=self.login('viewer@example.com','ViewTestPassword123!')
+        self.assertEqual(self.client.post('/api/users',headers=h,json=payload).status_code,403)
+        self.client.post('/api/logout',headers=h,json={})
+        self.login()
+        self.assertEqual(self.client.post('/api/users',json=payload).status_code,403)
+    def test_user_provisioning_rejects_invalid_role_and_address(self):
+        h=self.login()
+        for payload in ({'email':'invalid','role':'admin'},{'email':'new@example.com','role':'superuser'}):
+            self.assertEqual(self.client.post('/api/users',headers=h,json=payload).status_code,400)
