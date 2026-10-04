@@ -1,0 +1,10 @@
+__pycache__/
+.venv/
+.env
+.env.*
+!.env.example
+runtime/
+audit/
+*.db
+*.db-*
+.railway/

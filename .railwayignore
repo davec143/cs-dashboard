@@ -1,0 +1,8 @@
+.venv/
+runtime/
+audit/private/
+audit/*.jpg
+**/__pycache__/
+.env
+.env.*
+.git/

@@ -1,0 +1,10 @@
+*
+!requirements.txt
+!qa
+!qa/*.py
+!web
+!web/*
+!config.json
+!evaluator.md
+!tests
+!tests/*.py
