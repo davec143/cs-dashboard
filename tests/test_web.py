@@ -106,3 +106,49 @@ class WebTests(unittest.TestCase):
         h=self.login()
         for payload in ({'email':'invalid','role':'admin'},{'email':'new@example.com','role':'superuser'}):
             self.assertEqual(self.client.post('/api/users',headers=h,json=payload).status_code,400)
+
+    def test_user_management_is_admin_only_and_revokes_access(self):
+        h=self.login()
+        users=self.client.get('/api/users')
+        self.assertEqual(users.status_code,200)
+        self.assertNotIn('password_hash',str(users.json))
+        changed=self.client.post('/api/users/access',headers=h,json={'email':'viewer@example.com','role':'viewer','enabled':False})
+        self.assertEqual(changed.status_code,200)
+        self.assertFalse(changed.json['enabled'])
+        reset=self.client.post('/api/users/reset-password',headers=h,json={'email':'viewer@example.com'})
+        self.assertEqual(reset.status_code,200)
+        self.assertGreaterEqual(len(reset.json['initial_password']),24)
+        self.assertEqual(self.client.post('/api/users/access',headers=h,json={'email':'lead@example.com','role':'viewer','enabled':True}).status_code,400)
+
+    def test_sensitive_management_reads_require_admin(self):
+        self.login('viewer@example.com','ViewTestPassword123!')
+        for path in ['/api/users','/api/system','/api/reviews/1']:
+            self.assertEqual(self.client.get(path).status_code,403)
+
+    def test_review_removes_disputed_score_and_preserves_history(self):
+        h=self.login();e=self.store.snapshot()['evaluations'][0]
+        body={'evaluation_id':e['id'],'decision':'disputed','note':'The interpretation of the quoted turn needs correction.'}
+        self.assertEqual(self.client.post('/api/reviews',json=body).status_code,403)
+        self.assertEqual(self.client.post('/api/reviews',json=body,headers=h).status_code,201)
+        data=self.client.get('/api/dashboard').json
+        self.assertEqual(data['pilot']['validated_count'],0)
+        self.assertIsNone(data['pilot']['summary']['mean'])
+        self.assertEqual(self.client.get(f"/api/reviews/{e['id']}").json['reviews'][0]['decision'],'disputed')
+        body['decision']='approved';body['note']='Verified interpretation against the complete conversation.'
+        self.assertEqual(self.client.post('/api/reviews',json=body,headers=h).status_code,201)
+        self.assertEqual(self.client.get('/api/dashboard').json['pilot']['validated_count'],1)
+        self.assertEqual(len(self.client.get(f"/api/reviews/{e['id']}").json['reviews']),2)
+        self.client.post('/api/logout',json={},headers=h)
+        self.login('viewer@example.com','ViewTestPassword123!')
+        self.assertNotIn('human_review',self.client.get('/api/dashboard').json['pilot']['evaluations'][0])
+
+    def test_readiness_distinguishes_intentional_pause_from_failure(self):
+        self.assertIs(self.client.get('/readyz').json['processing_enabled'],False)
+        with patch.dict(os.environ,{'QA_PROCESSING_ENABLED':'true'}):
+            r=self.client.get('/readyz');self.assertEqual(r.status_code,503)
+            self.assertIs(r.json['processing_enabled'],True)
+
+    def test_webhook_rejects_invalid_data_shape(self):
+        with patch.dict(os.environ,{'QA_PROCESSING_ENABLED':'true','AIRCALL_WEBHOOK_TOKEN':'test-hook'}):
+            r=self.client.post('/webhooks/aircall',json={'event':'call.ended','token':'test-hook','data':['invalid']})
+            self.assertEqual(r.status_code,400)

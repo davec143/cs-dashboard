@@ -46,3 +46,20 @@ class PostgresWebTests(PostgresFixture, WebTests):
     make_store = PostgresFixture.pg_store
 
 del WebTests
+
+from test_auth_management import AuthManagementTests
+from test_review import ReviewTests
+
+@unittest.skipUnless(os.environ.get('QA_TEST_DATABASE_URL'),'PostgreSQL URL not set')
+class PostgresAuthManagementTests(PostgresFixture, AuthManagementTests):
+    setUp = AuthManagementTests.setUp
+    tearDown = AuthManagementTests.tearDown
+    make_store = PostgresFixture.pg_store
+
+@unittest.skipUnless(os.environ.get('QA_TEST_DATABASE_URL'),'PostgreSQL URL not set')
+class PostgresReviewTests(PostgresFixture, ReviewTests):
+    setUp = ReviewTests.setUp
+    tearDown = ReviewTests.tearDown
+    make_store = PostgresFixture.pg_store
+
+del AuthManagementTests, ReviewTests

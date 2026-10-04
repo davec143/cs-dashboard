@@ -4,7 +4,7 @@ import json
 import math
 import re
 
-RUBRIC_VERSION = 'hl-service-2.0'
+RUBRIC_VERSION = 'hl-service-2.1'
 DIMENSIONS = ('rapport', 'needs_discovery', 'technical_escalation',
               'retention_value', 'call_flow', 'appreciative_closing')
 CALL_TYPES = ('service', 'sales', 'outbound_followup', 'voicemail',
@@ -122,6 +122,8 @@ def early_disposition(call):
 
 def evaluate_gate(result, turns, target_agent_id):
     validate_schema(result, EVALUATION_SCHEMA)
+    if len(result['improvements']) > 3:
+        raise InvalidEvaluation('at_most_three_improvements_required')
     by_id = {t['id']: t for t in turns}
     target = [t for t in turns if t['role'] == 'agent' and t['agent_id'] == str(target_agent_id)]
     reasons = list(result['review_reasons'])
@@ -158,6 +160,8 @@ def evaluate_gate(result, turns, target_agent_id):
             raise InvalidEvaluation('feedback_behavior_and_action_required')
         if not check_evidence(feedback['evidence']):
             raise InvalidEvaluation('feedback_requires_target_agent_evidence')
+        if feedback['theme'] == 'accuracy_review':
+            reasons.append('Technical accuracy requires subject-matter review')
     excluded = result['call_type'] in ('voicemail', 'wrong_number', 'insufficient')
     if excluded:
         if applicable or result['strengths'] or result['improvements']:

@@ -1,5 +1,6 @@
 *
 !requirements.txt
+!backup-requirements.txt
 !qa
 !qa/*.py
 !web

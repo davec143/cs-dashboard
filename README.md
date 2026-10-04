@@ -53,3 +53,13 @@ Use `--enqueue` only after reviewing the plan. Existing call IDs are preserved. 
 Prove one real call from Aircall through durable storage to dashboard, including retries and reconciliation. Calibrate a balanced sample against independent human reviews before relying on agent quality estimates. Unknown speakers and unsupported evidence route to review. Product accuracy requires an authoritative knowledge source, which is not yet integrated.
 
 Configure and verify PostgreSQL backup/restore, ongoing monitoring, named management access, and retention before production cutover. Railway database templates require operator-managed backups and maintenance. Keep credentials in host variables and keep the old pipeline available until the replacement passes acceptance checks.
+
+## Administration and human review
+
+Administrators can use **People & access** to create admin/viewer accounts, change access, disable accounts, and reset passwords. Initial passwords are returned once for private delivery; the screen does not send email. Access changes and resets revoke all sessions, and the last active administrator cannot be removed. Account owners change their passwords under **Account**.
+
+Call details show dimension-specific quotes and review reasons. Administrators can approve an evidence-checked assessment, dispute it, or exclude it with a written reason. Original model output and every decision remain preserved. Disputed/excluded or superseded assessments do not contribute to quality estimates; their existing coaching actions are held. A human approval cannot bypass a failed evidence gate. Exactly one current evaluation counts per call, including after reassignment or retry.
+
+**System health** shows configuration presence without secret values, worker freshness, reconciliation, failed jobs, and verified backup/restore timestamps. The scheduled GitHub health check treats an explicit pause as expected but fails when enabled processing is unhealthy. Workflow failure notifications follow the repository owner's GitHub notification settings. Scheduled checks are best-effort and can be delayed by GitHub.
+
+See [operations and recovery](docs/operations.md) for encrypted PostgreSQL backups, isolated restore drills, and the production cutover checklist. The backup service uses `Dockerfile.backup`; the dashboard and worker continue to use `Dockerfile`. No transcript retention deletion or historical re-scoring runs automatically.
