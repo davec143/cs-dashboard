@@ -79,6 +79,17 @@ class WebTests(unittest.TestCase):
         self.assertIn("frame-ancestors 'none'",r.headers['Content-Security-Policy'])
         self.assertEqual(self.client.post('/api/login',data='x'*1_000_001,content_type='application/json').status_code,413)
 
+    def test_clarity_loader_is_off_by_default_and_allowed_by_csp_when_configured(self):
+        r=self.client.get('/clarity.js')
+        self.assertEqual(r.status_code,200);self.assertNotIn(b'clarity.ms',r.data)
+        self.assertNotIn('clarity',self.client.get('/').headers['Content-Security-Policy'])
+        with patch.dict(os.environ,{'CLARITY_PROJECT_ID':'abc123xyz'}):
+            r=self.client.get('/clarity.js')
+            self.assertIn(b'"abc123xyz"',r.data);self.assertEqual(r.mimetype,'text/javascript')
+            self.assertIn('https://www.clarity.ms',self.client.get('/').headers['Content-Security-Policy'])
+        with patch.dict(os.environ,{'CLARITY_PROJECT_ID':'bad"id'}):
+            self.assertNotIn(b'clarity.ms',self.client.get('/clarity.js').data)
+
     def test_admin_can_provision_unique_account_and_it_can_sign_in(self):
         h=self.login()
         r=self.client.post('/api/users',headers=h,json={'email':'new-admin@example.com','role':'admin'})

@@ -16,6 +16,23 @@ from .history import history
 
 ROOT = Path(__file__).resolve().parents[1]
 SHEET_MAX_BODY = 40 * 1024 * 1024
+# Microsoft Clarity (usage analytics + session recordings). Off unless CLARITY_PROJECT_ID is set.
+CLARITY_HOSTS_SCRIPT = 'https://www.clarity.ms https://scripts.clarity.ms'
+CLARITY_HOSTS_CONNECT = 'https://*.clarity.ms https://c.bing.com'
+
+
+def clarity_project_id():
+    value = os.environ.get('CLARITY_PROJECT_ID', '').strip()
+    return value if value.isalnum() and 4 <= len(value) <= 20 else ''
+
+
+def content_security_policy():
+    clarity = bool(clarity_project_id())
+    script = "script-src 'self'" + (' ' + CLARITY_HOSTS_SCRIPT if clarity else '')
+    img = "img-src 'self' data:" + (' ' + CLARITY_HOSTS_CONNECT if clarity else '')
+    connect = "connect-src 'self'" + (' ' + CLARITY_HOSTS_CONNECT if clarity else '')
+    return (f"default-src 'self'; {script}; style-src 'self'; {img}; {connect}; "
+            "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 
 
 def create_app(store=None, testing=False):
@@ -47,7 +64,7 @@ def create_app(store=None, testing=False):
         response.headers.update({'Cache-Control':'no-store', 'X-Content-Type-Options':'nosniff',
             'Referrer-Policy':'no-referrer', 'X-Frame-Options':'DENY',
             'Strict-Transport-Security':'max-age=31536000',
-            'Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"})
+            'Content-Security-Policy':content_security_policy()})
         return response
 
     @app.errorhandler(Exception)
@@ -72,6 +89,19 @@ def create_app(store=None, testing=False):
     @app.get('/')
     def index():
         return send_from_directory(ROOT / 'web', 'dashboard.html')
+
+    @app.get('/clarity.js')
+    def clarity_loader():
+        # External file because the CSP forbids inline scripts; the page identifies the signed-in account.
+        project = clarity_project_id()
+        js = '/* usage analytics off */\n'
+        if project:
+            js = ('(function(c,l,a,r,i,t,y){c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};'
+                  't=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;'
+                  'y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);})'
+                  f'(window,document,"clarity","script",{json.dumps(project)});\n'
+                  'window.clarity("set","app","cs-dashboard");\n')
+        return app.response_class(js, mimetype='text/javascript')
 
     @app.get('/<asset>')
     def asset(asset):
