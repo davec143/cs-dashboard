@@ -197,3 +197,33 @@ class AuthManagementTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class RecoveryTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        from qa.db import Store
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.store = Store(Path(self.tmp.name) / 'r.db')
+
+    def test_recovery_resets_existing_admin_once_and_revokes_sessions(self):
+        from werkzeug.security import generate_password_hash
+        from qa import auth
+        auth.create_user(self.store, 'lead@example.com', generate_password_hash('ForgottenPassword123!'), 'viewer')
+        token, _ = auth.login(self.store, 'lead@example.com', 'ForgottenPassword123!', '1.1.1.1')
+        new_hash = generate_password_hash('RecoveredPassword123!')
+        self.assertTrue(auth.recover_admin(self.store, 'Lead@Example.com', new_hash))
+        self.assertIsNone(auth.identity(self.store, token))
+        self.assertFalse(auth.recover_admin(self.store, 'lead@example.com', new_hash))
+        token, err = auth.login(self.store, 'lead@example.com', 'RecoveredPassword123!', '1.1.1.2')
+        self.assertIsNone(err)
+        self.assertEqual(auth.identity(self.store, token)['role'], 'admin')
+
+    def test_recovery_creates_missing_admin_and_rejects_plaintext(self):
+        from werkzeug.security import generate_password_hash
+        from qa import auth
+        self.assertTrue(auth.recover_admin(self.store, 'new@example.com', generate_password_hash('x' * 20)))
+        with self.assertRaises(ValueError):
+            auth.recover_admin(self.store, 'new@example.com', 'plaintext-password')
