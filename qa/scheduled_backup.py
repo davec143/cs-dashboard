@@ -198,8 +198,33 @@ def _record_status(conn, values):
                          'ON CONFLICT(key) DO UPDATE SET value=excluded.value', (key, str(value)))
 
 
-def run_backup():
+def safe_error_code(stage, error):
+    """Stage + exception class (+ S3 error code). Never messages, URLs, or row data."""
+    if isinstance(error, ops.OpsError):
+        return str(error)
+    code = stage + ':' + type(error).__name__
+    response = getattr(error, 'response', None)
+    if isinstance(response, dict):
+        s3_code = str((response.get('Error') or {}).get('Code') or '')
+        if re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', s3_code):
+            code += ':' + s3_code
+    return code
+
+
+def _connect_with_retry(database_url, attempts=6):
+    """Railway's private network can take a few seconds to resolve when a cron container starts."""
     import psycopg
+    for attempt in range(attempts):
+        try:
+            return psycopg.connect(database_url, connect_timeout=10, autocommit=True,
+                                   options='-c statement_timeout=15000')
+        except psycopg.OperationalError:
+            if attempt == attempts - 1:
+                raise ops.OpsError('backup_database_unreachable') from None
+            time.sleep(min(2 ** attempt, 15))
+
+
+def run_backup():
     key = encryption_key()
     client, bucket = _storage()
     prefix = os.environ.get('BACKUP_S3_PREFIX', 'cs-quality').strip('/')
@@ -207,33 +232,39 @@ def run_backup():
         raise ops.OpsError('backup_prefix_invalid')
     database_url, _ = ops._connection('DATABASE_URL')
     # Session lock prevents a manual run and the cron job from overlapping.
-    with psycopg.connect(database_url, connect_timeout=10, autocommit=True,
-                          options='-c statement_timeout=15000') as conn:
+    with _connect_with_retry(database_url) as conn:
         if not conn.execute('SELECT pg_try_advisory_lock(4391332)').fetchone()[0]:
             raise ops.OpsError('backup_already_running')
         started = time.time()
         _record_status(conn, {'backup_last_attempt': started})
+        stage = 'dump'
         try:
             with tempfile.TemporaryDirectory(prefix='csqa-backup-') as folder:
                 root = Path(folder)
                 archive = root / 'database.dump'
                 result = ops.backup(archive)
+                stage = 'encrypt'
                 encrypted = root / 'database.dump.gcm'
                 ciphertext_digest = encrypt_file(archive, encrypted, key)
                 manifest = ops._manifest_path(archive)
                 stamp = datetime.now(timezone.utc).strftime('%Y/%m/%d/%H%M%SZ') + '-' + uuid.uuid4().hex
                 object_prefix = prefix + '/' + stamp
+                stage = 'upload'
                 _upload(client, bucket, object_prefix + '/database.dump.gcm', encrypted)
                 _upload(client, bucket, object_prefix + '/database.dump.manifest.json', manifest)
                 downloaded_encrypted = root / 'downloaded.dump.gcm'
                 recovered_archive = root / 'downloaded.dump'
+                stage = 'download'
                 _download(client, bucket, object_prefix + '/database.dump.gcm', downloaded_encrypted, ciphertext_digest)
                 _download(client, bucket, object_prefix + '/database.dump.manifest.json',
                           ops._manifest_path(recovered_archive), _digest(manifest))
+                stage = 'decrypt'
                 if decrypt_file(downloaded_encrypted, recovered_archive, key) != result['sha256']:
                     raise ops.OpsError('decrypted_backup_checksum_mismatch')
+                stage = 'restore'
                 with local_restore_database(root) as target:
                     restored = ops.restore_check(recovered_archive, target)
+                stage = 'receipt'
                 completed = time.time()
                 receipt = {'ok': True, 'operation': 'scheduled-backup', 'completed_at': completed,
                            'object_prefix': object_prefix, 'encrypted_sha256': ciphertext_digest,
@@ -249,7 +280,7 @@ def run_backup():
                                       'backup_error': ''})
                 return receipt
         except Exception as error:
-            code = str(error) if isinstance(error, ops.OpsError) else 'scheduled_backup_failed'
+            code = safe_error_code(stage, error)
             try:
                 _record_status(conn, {'backup_error': code})
             except Exception:
@@ -275,8 +306,8 @@ def main(argv=None):
             result = {'ok': True, 'operation': 'decrypt', 'sha256': digest}
     except ops.OpsError as error:
         result = {'ok': False, 'operation': args.command, 'error': str(error)}
-    except Exception:
-        result = {'ok': False, 'operation': args.command, 'error': 'scheduled_backup_failed'}
+    except Exception as error:
+        result = {'ok': False, 'operation': args.command, 'error': safe_error_code('setup', error)}
     print(json.dumps(result, sort_keys=True))
     return 0 if result['ok'] else 1
 

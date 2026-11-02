@@ -23,8 +23,20 @@ Before enabling processing, configure Aircall API credentials, the webhook token
 | `AIRCALL_WEBHOOK_TOKEN` | Validate Aircall event payloads |
 | `OPENAI_API_KEY`, `EVALUATOR_MODEL` | Evaluation provider and pinned model |
 | `QA_BOOTSTRAP_EMAIL`, `QA_BOOTSTRAP_PASSWORD_HASH` | Initial account provisioning; remove afterwards |
+| `SHEET_INGEST_TOKEN` | Shared secret (32+ chars) the Make sheet-sync scenario sends as `Authorization: Bearer …` |
 
 Historical audit files are optional private inputs via `QA_AUDIT_DIR`. They are excluded from this repository and deployment image. The production dashboard starts empty until real calls or separately authorized historical data are ingested.
+
+## Google Sheet feed (live today)
+
+The Make pipeline writes every scored call to the **Call Evaluation** sheet; its Apps Script parses
+them into the `Data` tab. A separate Make scenario, *Call Evaluation Sheet → CS Dashboard*, reads
+`Data!A1:Q` every 3 hours and POSTs it to `/ingest/sheet`. Each sync atomically replaces the mirror,
+so the dashboard always equals the sheet (rows, duplicates, totals). The **Live from Sheet** views
+reproduce the sheet Dashboard tab's math exactly: counts by row, averages over non-blank scores,
+half-up rounding. A wrong header or a snapshot more than 20% smaller than the last one is rejected
+and the last good copy stays visible. No sync for 8 hours, or a rejected sync, raises an alert in
+System health and fails `/readyz` `operations_ok`, which the GitHub health check monitors.
 
 ## Local development and verification
 

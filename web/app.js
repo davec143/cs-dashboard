@@ -3,7 +3,8 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, x => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[x]));
 const num = n => Number(n).toLocaleString();
 let people = [], systemStatus = null;
-let data, session, view = 'overview', reviewSource = 'pilot', overviewSource = 'management', page = 0;
+let data, session, view = 'overview', reviewSource = 'sheet', overviewSource = 'sheet', page = 0;
+let sheetFilters = {agent:'',type:'',query:''}, sheetPage = 0;
 let filters = {agent:'',issue:'',query:''};
 const titles = {
  overview:['Quality you can act on.','See the health of your data before judging the quality of your calls.'],
@@ -48,6 +49,54 @@ function historicalOverview() {
  <div class="issue"><div class="issue-number">${data.legacy.filter(r=>r.flags.includes('hannahMention')).length}</div><div><strong>AI assistant mentioned</strong><p>Verify human attribution before assigning coaching.</p></div></div></div></div>
  <div class="card wide"><div class="section-head"><div><h2>Team coverage</h2><p>Historical averages are shown for audit comparison. They are not a calibrated ranking.</p></div><button class="link-button" data-go="review">Explore call history →</button></div><div class="table-wrap"><table><thead><tr><th>Agent</th><th>Raw rows</th><th>Marked evaluated</th><th>Historical average</th><th>Confidence in score</th></tr></thead><tbody>${agents}</tbody></table></div><div class="callout"><p><b>Management view:</b> interpret quality alongside coverage, call purpose, sample size, and review status. The new pipeline counts only validated evaluations.</p></div></div>`;
 }
+
+const pct = v => v===null||v===undefined?'—':v+'%';
+const sheetAge = t => { if(!t) return 'never'; const m=Math.round((Date.now()/1000-Number(t))/60); return m<1?'just now':m<60?m+' min ago':m<1440?Math.round(m/60)+' h ago':Math.round(m/1440)+' days ago'; };
+function sheetStatus() {
+ const s=data.sheet;
+ if(!s||!s.connected) return `<div class="notice"><div><b>Waiting for the first Sheet sync</b>The Call Evaluation sheet has not been delivered to this dashboard yet.</div></div>`;
+ if(s.sync_error) return `<div class="notice"><div><b>Latest Sheet sync was rejected (${esc(s.sync_error)})</b>Showing the last good copy from ${esc(sheetAge(s.last_sync))}. Nothing was overwritten.</div></div>`;
+ if(s.stale) return `<div class="notice"><div><b>Sheet sync is overdue</b>Last synced ${esc(sheetAge(s.last_sync))}. Check the Make scenario "Call Evaluation Sheet → CS Dashboard".</div></div>`;
+ return '';
+}
+function sheetOverview() {
+ const s=data.sheet;
+ if(!s||!s.connected) return sheetStatus();
+ const h=s.health, months=Object.entries(s.monthly).slice(-8), max=Math.max(1,...months.map(m=>m[1]));
+ const bars=months.map(([month,count])=>`<div class="bar-group"><span class="count">${count}</span><div class="bar" data-sheet-count="${count}" data-max="${max}"></div><span class="bar-label">${new Date(month+'-02').toLocaleDateString('en-US',{month:'short'})}</span></div>`).join('');
+ const dims=s.dimensions.map(d=>`<tr><td>${esc(d.label)}</td><td><strong>${pct(d.mean)}</strong></td></tr>`).join('');
+ const card=s.scorecard.map(a=>`<tr><td><strong>${esc(a.agent)}</strong></td><td>${a.calls}</td><td><strong>${pct(a.total)}</strong></td><td>${pct(a.rapport)}</td><td>${pct(a.needs_discovery)}</td><td>${pct(a.technical_escalation)}</td><td>${pct(a.retention_value)}</td><td>${pct(a.call_flow)}</td><td>${pct(a.appreciative_closing)}</td><td><button class="link-button" data-sheet-agent="${esc(a.agent)}">Calls →</button></td></tr>`).join('');
+ const days=s.daily.slice(-14).reverse().map(d=>`<tr><td>${d.date}</td><td>${d.calls}</td><td>${pct(d.mean)}</td></tr>`).join('');
+ const issues=[[h.duplicate_rows,'Duplicate call rows',`Same Call ID appears more than once in the sheet${h.duplicate_call_ids.length?': '+h.duplicate_call_ids.slice(0,5).join(', ')+(h.duplicate_call_ids.length>5?'…':''):''}. Counted as the sheet counts them.`],
+  [h.evaluated_missing_scores.length,'Evaluated without a score',h.evaluated_missing_scores.length?'Call '+h.evaluated_missing_scores.slice(0,5).join(', ')+' is marked Evaluated but has no Total Score.':'Every evaluated call has a score.'],
+  [h.undated_rows,'Rows without a date','These are excluded from the daily trend only.']].filter(x=>x[0]).map(([n,t,p])=>`<div class="issue"><div class="issue-number">${n}</div><div><strong>${t}</strong><p>${esc(p)}</p></div></div>`).join('')||'<p class="small">No data-health issues in the latest sync.</p>';
+ return `${sheetStatus()}<div class="metrics">${metric('Total calls',num(s.total_calls),`${num(s.unique_calls)} unique call IDs`)}${metric('Evaluated',num(s.evaluated),'Scored by the Make pipeline')}${metric('Voicemails',num(s.voicemails),'Not scored')}${metric('Avg total score',pct(s.dimensions[0].mean),'Evaluated calls')}</div>
+ <div class="grid-two"><div class="card"><div class="section-head"><div><h2>Score by dimension</h2><p>Average % across evaluated calls · same figures as the sheet</p></div><span class="pill">Synced ${esc(sheetAge(s.last_sync))}</span></div><table><tbody>${dims}</tbody></table></div>
+ <div class="card"><div class="section-head"><div><h2>Calls per month</h2><p>All rows in the sheet</p></div></div><div class="bar-chart">${bars}</div></div></div>
+ <div class="card wide"><div class="section-head"><div><h2>Agent scorecard</h2><p>Evaluated calls only, ranked by total score.</p></div><button class="link-button" data-go="review">All calls →</button></div><div class="table-wrap"><table><thead><tr><th>Agent</th><th>Calls</th><th>Total</th><th>Rapport</th><th>Needs discovery</th><th>Technical / escalation</th><th>Retention &amp; value</th><th>Call flow</th><th>Closing</th><th></th></tr></thead><tbody>${card||'<tr><td colspan="10" class="empty">No evaluated calls yet.</td></tr>'}</tbody></table></div></div>
+ <div class="grid-two"><div class="card"><h2>Daily average score</h2><p class="small">Latest 14 call dates with evaluated calls</p><table><thead><tr><th>Date</th><th>Evaluated</th><th>Avg total</th></tr></thead><tbody>${days||'<tr><td colspan="3">No dated calls.</td></tr>'}</tbody></table></div>
+ <div class="card"><h2>Data health</h2><p class="small">Latest call in sheet: <strong>${esc(s.latest_call_date||'—')}</strong> · last synced ${esc(sheetAge(s.last_sync))}</p>${issues}</div></div>`;
+}
+function sheetRows() {
+ return data.sheet.rows.filter(r=>(!sheetFilters.agent||r.agent===sheetFilters.agent)&&(!sheetFilters.type||r.call_type===sheetFilters.type)&&(!sheetFilters.query||r.call_id.includes(sheetFilters.query.trim()))).sort((a,b)=>(b.call_date||'').localeCompare(a.call_date||'')||b.row_number-a.row_number);
+}
+function sheetReview() {
+ const s=data.sheet;
+ if(!s||!s.connected) return sheetStatus();
+ const rows=sheetRows(), visible=rows.slice(sheetPage*25,sheetPage*25+25);
+ const agents=[...new Set(s.rows.map(r=>r.agent))].sort(), types=Object.keys(s.call_types).sort();
+ return `${sheetStatus()}<div class="card"><div class="section-head"><div><h2>All calls from the sheet</h2><p>Newest first. One row per sheet row, exactly as the sheet holds them.</p></div><span class="pill">${num(rows.length)} calls</span></div>
+ <div class="filters"><label>Agent<select id="sheet-agent"><option value="">All agents</option>${agents.map(a=>`<option ${sheetFilters.agent===a?'selected':''}>${esc(a)}</option>`).join('')}</select></label><label>Call type<select id="sheet-type"><option value="">All types</option>${types.map(t=>`<option ${sheetFilters.type===t?'selected':''}>${esc(t)}</option>`).join('')}</select></label><label>Call ID<input id="sheet-search" value="${esc(sheetFilters.query)}" placeholder="Search by call ID"></label></div>
+ <div class="table-wrap"><table><thead><tr><th>Call / date</th><th>Agent</th><th>Type</th><th>Total</th><th></th></tr></thead><tbody>${visible.map(r=>`<tr><td><strong>${esc(r.call_id)}</strong><br><span class="small">${esc(r.call_date||'—')}</span></td><td>${esc(r.agent)}</td><td><span class="tag">${esc(r.call_type)}</span></td><td><strong>${pct(r.total)}</strong></td><td><button class="link-button" data-sheet-row="${r.row_number}">Open →</button></td></tr>`).join('')||'<tr><td colspan="5" class="empty">No calls match these filters.</td></tr>'}</tbody></table></div>
+ <div class="nav-page"><span>${rows.length?`${sheetPage*25+1}–${Math.min((sheetPage+1)*25,rows.length)}`:'0'} of ${num(rows.length)}</span><div><button class="plain" id="sheet-prev" ${sheetPage===0?'disabled':''}>Previous</button> <button class="plain" id="sheet-next" ${(sheetPage+1)*25>=rows.length?'disabled':''}>Next</button></div></div></div>`;
+}
+async function sheetDetail(rowNumber) {
+ let r; try{r=await api('/api/sheet/rows/'+rowNumber);}catch(err){$('#message').textContent=err.message;return;}
+ const dims=data.sheet.dimensions.map(d=>`<tr><td>${esc(d.label)}</td><td><strong>${pct(r[d.key])}</strong></td></tr>`).join('');
+ const block=(title,text)=>text?`<h3>${title}</h3>${String(text).split(/\s\|\s|\n+/).filter(Boolean).map(p=>`<p>${esc(p)}</p>`).join('')}`:'';
+ $('#detail-body').innerHTML=`<div class="eyebrow">CALL EVALUATION SHEET · ROW ${r.row_number}</div><h1>Call ${esc(r.call_id)}</h1><p>${esc(r.agent)} · ${esc(r.call_date||'—')} · ${esc(r.call_type)}${r.customer_number?' · '+esc(r.customer_number):''}</p><table><tbody>${dims}</tbody></table>${block('Call context',r.context)}${block('Strengths',r.strengths)}${block('Areas for improvement',r.improvements)}${block('Improvement plan',r.plan)}`;
+ $('#detail').showModal();
+}
 function managementOverview() {
  const p=data.pilot,s=p.summary,total=Object.values(p.states).reduce((a,b)=>a+b,0),checked=p.validated_count;
  const dims=Object.entries(s.dimensions).map(([name,x])=>`<tr><td>${esc(name.replaceAll('_',' '))}</td><td>${x.mean.toFixed(1)}%</td><td>${x.count}</td></tr>`).join('');
@@ -59,7 +108,7 @@ function managementOverview() {
  <div class="card wide"><div class="section-head"><div><h2>Team coaching coverage</h2><p>Compare like call purposes and time periods. These all-time model estimates need human calibration.</p></div><button class="link-button" id="overview-pilot">Inspect evidence →</button></div><table><thead><tr><th>Agent</th><th>Checked calls</th><th>Estimate</th><th>Interpretation</th></tr></thead><tbody>${teams||'<tr><td colspan="4" class="empty">No evidence-checked calls yet.</td></tr>'}</tbody></table></div>
  <div class="grid-two"><div class="card"><h2>Daily quality and sample size</h2><p class="small">Latest 14 active dates · UTC · checked evaluations only</p><table><thead><tr><th>Call date</th><th>Calls</th><th>Estimate</th></tr></thead><tbody>${days||'<tr><td colspan="3">Awaiting calls</td></tr>'}</tbody></table></div><div class="card"><h2>Call mix and freshness</h2><p class="small">Call purpose affects the applicable rubric.</p>${Object.entries(s.call_types).map(([kind,n])=>`<p>${esc(kind.replaceAll('_',' '))}: <strong>${n}</strong></p>`).join('')}<h3>Latest checked evaluation</h3><p>${when(s.latest_evaluation)}</p><h3>Coaching actions</h3><p>Open / practicing: ${(s.task_states.open||0)+(s.task_states.practicing||0)} · Verified: ${s.task_states.verified||0}</p><div class="callout"><p>Passing an evidence check verifies quoted text and score arithmetic. Human review is still needed to validate whether the interpretation is fair.</p></div></div></div>`;
 }
-function overview() {return `<div class="source-tabs"><button id="management-tab" class="${overviewSource==='management'?'active':''}">Management overview</button><button id="history-overview-tab" class="${overviewSource==='legacy'?'active':''}">Historical audit</button></div>${overviewSource==='management'?managementOverview():historicalOverview()}`;}
+function overview() {return `<div class="source-tabs"><button id="sheet-overview-tab" class="${overviewSource==='sheet'?'active':''}">Live from Sheet</button><button id="management-tab" class="${overviewSource==='management'?'active':''}">Shadow pilot</button><button id="history-overview-tab" class="${overviewSource==='legacy'?'active':''}">Historical audit</button></div>${overviewSource==='sheet'?sheetOverview():overviewSource==='management'?managementOverview():historicalOverview()}`;}
 function legacyReview() {
  let rows=uniqueLegacy().filter(r=>(!filters.agent||r.agent===filters.agent)&&(!filters.issue||r.issues.includes(filters.issue))&&(!filters.query||r.call_id.includes(filters.query)));
  rows.sort((a,b)=>b.issues.length-a.issues.length||b.date.localeCompare(a.date));
@@ -73,7 +122,7 @@ function pilotReview() {
  const p=data.pilot;
  return `<div class="card"><div class="section-head"><div><h2>${data.demo?'Synthetic workflow examples':'Shadow pilot calls'}</h2><p>${data.demo?'These three test records demonstrate validation, review, and exclusion. They are not real calls.':'Latest 500 updated calls shown. Aggregates cover all stored calls; only checked evaluations contribute to averages.'}</p></div></div><div class="table-wrap"><table><thead><tr><th>Call</th><th>Agent</th><th>Status</th><th>Total</th><th></th></tr></thead><tbody>${p.calls.map(c=>{const e=p.evaluations.find(e=>e.call_id===c.id);return `<tr><td>${c.id}${c.metadata.source_url?`<br><a class="link-button" href="${esc(c.metadata.source_url)}" target="_blank" rel="noopener noreferrer">Open Aircall source ↗</a>`:''}</td><td>${esc(c.metadata.agent)}</td><td><span class="tag ${c.state==='validated'?'good':''}">${esc(c.state)}</span>${e?.human_review?`<br><span class="tag">${esc(e.human_review.decision)}</span>`:''}<br><span class="small">${esc(c.last_error||'')}</span></td><td>${e&&e.eligible?e.total+'%':'—'}</td><td>${e&&session.role==='admin'?`<button class="link-button" data-eval-id="${e.id}">View evidence →</button>`:''}${session.role==='admin'&&data.processing_enabled&&['error','review'].includes(c.state)?`<button class="link-button" data-retry-id="${esc(c.id)}">Retry processing</button>`:''}</td></tr>`;}).join('')||'<tr><td colspan="5" class="empty">No pilot calls yet. Connect and validate the shadow workflow first.</td></tr>'}</tbody></table></div></div>`;
 }
-function review() {return `<div class="source-tabs"><button id="legacy-tab" class="${reviewSource==='legacy'?'active':''}">Historical audit</button><button id="pilot-tab" class="${reviewSource==='pilot'?'active':''}">${data.demo?'Sample workflow':'Shadow pilot'}</button></div>${reviewSource==='legacy'?legacyReview():pilotReview()}`;}
+function review() {return `<div class="source-tabs"><button id="sheet-review-tab" class="${reviewSource==='sheet'?'active':''}">Live from Sheet</button><button id="pilot-tab" class="${reviewSource==='pilot'?'active':''}">${data.demo?'Sample workflow':'Shadow pilot'}</button><button id="legacy-tab" class="${reviewSource==='legacy'?'active':''}">Historical audit</button></div>${reviewSource==='sheet'?sheetReview():reviewSource==='legacy'?legacyReview():pilotReview()}`;}
 function coaching() {
  const p=data.pilot, valid=p.evaluations.filter(e=>e.eligible), ts=p.summary.task_states;
  const themes={}; for(const e of valid) for(const i of e.result?.improvements||[]) themes[i.theme]=(themes[i.theme]||0)+1;
@@ -113,6 +162,15 @@ function bind() {
  document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>{view=b.dataset.go;render();});
  document.querySelectorAll('[data-legacy-id]').forEach(b=>b.onclick=()=>legacyDetail(b.dataset.legacyId));
  document.querySelectorAll('[data-eval-id]').forEach(b=>b.onclick=()=>evalDetail(Number(b.dataset.evalId)));
+ document.querySelectorAll('.bar[data-sheet-count]').forEach(b=>b.style.height=Math.max(3,Number(b.dataset.sheetCount)/Number(b.dataset.max)*135)+'px');
+ document.querySelectorAll('[data-sheet-row]').forEach(b=>b.onclick=()=>sheetDetail(Number(b.dataset.sheetRow)));
+ document.querySelectorAll('[data-sheet-agent]').forEach(b=>b.onclick=()=>{sheetFilters={agent:b.dataset.sheetAgent,type:'Evaluated',query:''};sheetPage=0;reviewSource='sheet';view='review';render();});
+ $('#sheet-overview-tab')?.addEventListener('click',()=>{overviewSource='sheet';render();});
+ $('#sheet-review-tab')?.addEventListener('click',()=>{reviewSource='sheet';render();});
+ $('#sheet-agent')?.addEventListener('change',ev=>{sheetFilters.agent=ev.target.value;sheetPage=0;render();});
+ $('#sheet-type')?.addEventListener('change',ev=>{sheetFilters.type=ev.target.value;sheetPage=0;render();});
+ $('#sheet-search')?.addEventListener('change',ev=>{sheetFilters.query=ev.target.value;sheetPage=0;render();});
+ $('#sheet-prev')?.addEventListener('click',()=>{sheetPage--;render();}); $('#sheet-next')?.addEventListener('click',()=>{sheetPage++;render();});
  $('#management-tab')?.addEventListener('click',()=>{overviewSource='management';render();});
  $('#history-overview-tab')?.addEventListener('click',()=>{overviewSource='legacy';render();});
  $('#overview-pilot')?.addEventListener('click',()=>{reviewSource='pilot';view='review';render();});
@@ -127,8 +185,8 @@ function bind() {
 }
 async function load() {
  try {session=await api('/api/session');const named=session.auth_mode==='named';$('#email-label').hidden=!named;$('#email-label input').required=named;$('#password-label').textContent=named?'Password':'Access token';$('#login-description').textContent=named?'Sign in with your individual management account.':'Enter your private viewer or lead access token.';$('#logout').hidden=!named||!session.authenticated;$('#account-button').hidden=!named||!session.authenticated;$('#login').hidden=session.authenticated;$('#workspace').hidden=!session.authenticated;$('#users-nav').hidden=!named||session.role!=='admin';if(!session.authenticated){data=null;people=[];systemStatus=null;$('#content').replaceChildren();$('#detail').close();$('#detail-body').replaceChildren();return;}if(view==='users'&&session.role!=='admin')view='overview';
- data=await api('/api/dashboard');if(named&&session.role==='admin'){const extra=await Promise.all([api('/api/users'),api('/api/system')]);people=extra[0].users;systemStatus=extra[1];}$('#mode-label').textContent=data.demo?'Local demo · synthetic examples':'Shadow pilot';$('#mode-badge').textContent=data.demo?'Audit + synthetic demo':'Shadow pilot';$('#snapshot-date').textContent=data.audit.latestCallDate||'Not imported';
- $('#global-banner').innerHTML=`<div><b>${data.demo?'Demonstration workspace':data.processing_enabled?'Shadow pilot · calibration pending':'Setup in progress · processing paused'}</b>${data.demo?'Coaching examples use synthetic test data.':data.processing_enabled?'Review evidence and calibrate assessments before using scores for team decisions.':'The dashboard is ready. Connect provider credentials and verify a controlled call before enabling processing.'}</div><button class="plain" id="banner-health">View system health →</button>`;
+ data=await api('/api/dashboard');if(named&&session.role==='admin'){const extra=await Promise.all([api('/api/users'),api('/api/system')]);people=extra[0].users;systemStatus=extra[1];}const sh=data.sheet||{};$('#mode-label').textContent=data.demo?'Local demo · synthetic examples':sh.connected?'Live from Call Evaluation sheet':'Shadow pilot';$('#mode-badge').textContent=data.demo?'Audit + synthetic demo':sh.connected?'Synced '+sheetAge(sh.last_sync):'Shadow pilot';$('#snapshot-date').textContent=sh.latest_call_date||data.audit.latestCallDate||'Not imported';
+ $('#global-banner').hidden=!!(sh.connected&&!sh.sync_error&&!sh.stale);$('#global-banner').innerHTML=sh.connected?`<div><b>${sh.sync_error?'Latest Sheet sync was rejected':'Sheet sync is overdue'}</b>The dashboard is showing the last good copy of the Call Evaluation sheet.</div><button class="plain" id="banner-health">View system health →</button>`:`<div><b>${data.demo?'Demonstration workspace':data.processing_enabled?'Shadow pilot · calibration pending':'Setup in progress · processing paused'}</b>${data.demo?'Coaching examples use synthetic test data.':data.processing_enabled?'Review evidence and calibrate assessments before using scores for team decisions.':'The dashboard is ready. Connect provider credentials and verify a controlled call before enabling processing.'}</div><button class="plain" id="banner-health">View system health →</button>`;
  $('#banner-health').onclick=()=>{view='health';render();};$('#message').textContent='';render();
  }catch(err){$('#message').textContent='Unable to load: '+err.message;}
 }

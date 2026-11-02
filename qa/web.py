@@ -8,13 +8,14 @@ import time
 from pathlib import Path
 from flask import Flask, request, jsonify, send_from_directory, g
 from werkzeug.exceptions import HTTPException
-from . import auth
+from . import auth, sheet
 from .db import Store, database_path
 from .server import EVENTS, MAX_BODY, safe_compare
 from .worker import minimal_call
 from .history import history
 
 ROOT = Path(__file__).resolve().parents[1]
+SHEET_MAX_BODY = 40 * 1024 * 1024
 
 
 def create_app(store=None, testing=False):
@@ -27,6 +28,9 @@ def create_app(store=None, testing=False):
 
     @app.before_request
     def identify():
+        if request.path == '/ingest/sheet':
+            request.max_content_length = SHEET_MAX_BODY
+            return None
         g.user = auth.identity(store, request.cookies.get('qa_session'))
         if request.path.startswith('/api/') and request.path not in ('/api/login', '/api/session'):
             if not g.user:
@@ -89,10 +93,11 @@ def create_app(store=None, testing=False):
         backup_at = float(store.setting('backup_completed_at') or 0)
         backups_ok = os.environ.get('QA_BACKUPS_REQUIRED') != 'true' or (
             time.time()-backup_at < 36*3600 and not store.setting('backup_error'))
-        operations_ok = time.time()-beat < 180 and backups_ok
+        operations_ok = time.time()-beat < 180 and backups_ok and sheet.sync_ok(store)
         ready = (enabled and time.time()-beat < 180
                  and time.time()-reconciled < 7200 and not store.setting('reconcile_error'))
-        return jsonify(ready=ready, processing_enabled=enabled, operations_ok=operations_ok), 200 if ready else 503
+        return jsonify(ready=ready, processing_enabled=enabled, operations_ok=operations_ok,
+                       sheet_ok=sheet.sync_ok(store)), 200 if ready else 503
 
     @app.get('/api/session')
     def session():
@@ -139,7 +144,9 @@ def create_app(store=None, testing=False):
         facts, manifest = history()
         if g.user['role'] == 'viewer':
             manifest = []
-        return jsonify(audit=facts, legacy=manifest,
+        sheet_summary = sheet.summary(store)
+        sheet_summary['rows'] = sheet.load_rows(store)
+        return jsonify(audit=facts, legacy=manifest, sheet=sheet_summary,
                        pilot=pilot, demo=False, audited_on='2026-10-04',
                        processing_enabled=os.environ.get('QA_PROCESSING_ENABLED') == 'true')
 
@@ -163,6 +170,29 @@ def create_app(store=None, testing=False):
             'asset_id':(data.get('data') or {}).get('id')}, sort_keys=True).encode()).hexdigest()
         added = store.enqueue(meta, key, kind)
         return jsonify(accepted=True, duplicate=not added)
+
+    @app.post('/ingest/sheet')
+    def ingest_sheet():
+        expected = os.environ.get('SHEET_INGEST_TOKEN', '')
+        supplied = request.headers.get('Authorization', '').removeprefix('Bearer ').strip()
+        if len(expected) < 32 or not safe_compare(supplied, expected):
+            return jsonify(error='invalid_sheet_token'), 401
+        try:
+            rows = sheet.parse(request.get_json(silent=True))
+            result = sheet.replace(store, rows, force=request.args.get('force') == 'true')
+        except sheet.SheetError as exc:
+            sheet.record_error(store, str(exc))
+            return jsonify(error=str(exc)), 422
+        return jsonify(ok=True, **result)
+
+    @app.get('/api/sheet/rows/<int:row_number>')
+    def sheet_row(row_number):
+        row = sheet.row_detail(store, row_number)
+        if not row:
+            return jsonify(error='not_found'), 404
+        if g.user['role'] != 'admin':
+            row.pop('customer_number', None)
+        return jsonify(row)
 
     @app.post('/api/users')
     def create_user():
@@ -221,10 +251,15 @@ def create_app(store=None, testing=False):
             alerts.append(f'{overdue} queued calls are more than 15 minutes overdue.')
         if store.setting('backup_error'):
             alerts.append('The latest backup or restore drill failed. Inspect the backup service before relying on recovery.')
+        if os.environ.get('SHEET_INGEST_TOKEN') and not sheet.sync_ok(store):
+            alerts.append('The Google Sheet feed has not synced cleanly in the last 8 hours '
+                          '(' + (store.setting('sheet_sync_error') or 'no recent sync') + '). Check the Make scenario.')
         backup_at = float(store.setting('backup_completed_at') or 0)
         if os.environ.get('QA_BACKUPS_REQUIRED') == 'true' and now-backup_at >= 36*3600:
             alerts.append('No verified database backup has completed in the last 36 hours.')
         return jsonify(worker_configuration=worker_config, webhook_configured=bool(os.environ.get('AIRCALL_WEBHOOK_TOKEN')),
+            sheet_feed_configured=bool(os.environ.get('SHEET_INGEST_TOKEN')),
+            sheet_last_sync=store.setting('sheet_last_sync'), sheet_sync_error=store.setting('sheet_sync_error') or '',
             processing_enabled=enabled, alerts=alerts, backup_completed_at=store.setting('backup_completed_at'),
             restore_verified_at=store.setting('restore_verified_at'))
 

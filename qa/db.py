@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from contextlib import contextmanager
 from pathlib import Path
+from .sheet import DDL as SHEET_DDL
 
 DDL = '''
 CREATE TABLE IF NOT EXISTS calls (
@@ -46,7 +47,7 @@ CREATE INDEX IF NOT EXISTS jobs_pending ON jobs(state,due);
 CREATE INDEX IF NOT EXISTS evaluations_latest ON evaluations(call_id,agent_id,id);
 CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires);
 
-'''
+''' + SHEET_DDL
 
 class Store:
     def __init__(self, path):
