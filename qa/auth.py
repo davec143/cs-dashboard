@@ -47,6 +47,33 @@ def create_user(store, email, password_hash, role='admin'):
                      (email, password_hash, role, time.time()))
 
 
+def recover_admin(store, email, password_hash):
+    """Operator break-glass: make this account an enabled admin with this password hash.
+
+    Driven by QA_RECOVERY_EMAIL / QA_RECOVERY_PASSWORD_HASH on the host, so only someone
+    who controls the deployment can use it. Idempotent across workers and restarts:
+    nothing changes (and no sessions are revoked) once the hash is already in place.
+    Remove both variables after signing in.
+    """
+    email = _email(email)
+    if not isinstance(password_hash, str) or not password_hash.startswith(('scrypt:', 'pbkdf2:')):
+        raise ValueError('invalid_recovery_hash')
+    with store.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        row = conn.execute('SELECT password_hash,role,enabled FROM users WHERE email=?', (email,)).fetchone()
+        if row and row['password_hash'] == password_hash and row['role'] == 'admin' and row['enabled']:
+            return False
+        if row:
+            conn.execute("UPDATE users SET password_hash=?,role='admin',enabled=1 WHERE email=?", (password_hash, email))
+        else:
+            conn.execute("INSERT INTO users(email,password_hash,role,created) VALUES (?,?,'admin',?)",
+                         (email, password_hash, time.time()))
+        conn.execute('DELETE FROM sessions WHERE email=?', (email,))
+        conn.execute('INSERT INTO audit_log(actor,action,subject,detail,created) VALUES (?,?,?,?,?)',
+                     ('operator', 'account.recovered', email, json.dumps({'created': not row}), time.time()))
+    return True
+
+
 def provision_user(store, email, role, actor):
     """Create a named account; return its initial password exactly once."""
     email = _email(email)

@@ -42,6 +42,8 @@ def create_app(store=None, testing=False):
     app.store = store
     if os.environ.get('QA_BOOTSTRAP_EMAIL') and os.environ.get('QA_BOOTSTRAP_PASSWORD_HASH'):
         auth.create_user(store, os.environ['QA_BOOTSTRAP_EMAIL'], os.environ['QA_BOOTSTRAP_PASSWORD_HASH'])
+    if os.environ.get('QA_RECOVERY_EMAIL') and os.environ.get('QA_RECOVERY_PASSWORD_HASH'):
+        auth.recover_admin(store, os.environ['QA_RECOVERY_EMAIL'], os.environ['QA_RECOVERY_PASSWORD_HASH'])
 
     @app.before_request
     def identify():
@@ -279,6 +281,9 @@ def create_app(store=None, testing=False):
             alerts.append(f'{failed} calls failed processing. Inspect and retry after resolving the cause.')
         if overdue:
             alerts.append(f'{overdue} queued calls are more than 15 minutes overdue.')
+        if os.environ.get('QA_RECOVERY_EMAIL') or os.environ.get('QA_RECOVERY_PASSWORD_HASH'):
+            alerts.append('Account recovery variables are still set. Remove QA_RECOVERY_EMAIL and '
+                          'QA_RECOVERY_PASSWORD_HASH from the dashboard service now that you have signed in.')
         if store.setting('backup_error'):
             alerts.append('The latest backup or restore drill failed. Inspect the backup service before relying on recovery.')
         if os.environ.get('SHEET_INGEST_TOKEN') and not sheet.sync_ok(store):
