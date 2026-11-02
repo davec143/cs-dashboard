@@ -30,12 +30,12 @@ Historical audit files are optional private inputs via `QA_AUDIT_DIR`. They are 
 ## Google Sheet feed (live today)
 
 The Make pipeline writes every scored call to the **Call Evaluation** sheet; its Apps Script parses
-them into the `Data` tab. A separate Make scenario, *Call Evaluation Sheet → CS Dashboard*, reads
-`Data!A1:Q` every 3 hours and POSTs it to `/ingest/sheet`. Each sync atomically replaces the mirror,
+them into the `Data` tab. At the end of each scored (non-voicemail) run, that same Make scenario
+reads `Data!A1:Q` and POSTs it to `/ingest/sheet`. Each sync atomically replaces the mirror,
 so the dashboard always equals the sheet (rows, duplicates, totals). The **Live from Sheet** views
 reproduce the sheet Dashboard tab's math exactly: counts by row, averages over non-blank scores,
 half-up rounding. A wrong header or a snapshot more than 20% smaller than the last one is rejected
-and the last good copy stays visible. No sync for 8 hours, or a rejected sync, raises an alert in
+and the last good copy stays visible. A rejected sync, or no sync for 4 days, raises an alert in
 System health and fails `/readyz` `operations_ok`, which the GitHub health check monitors.
 
 ## Local development and verification

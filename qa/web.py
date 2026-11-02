@@ -252,7 +252,7 @@ def create_app(store=None, testing=False):
         if store.setting('backup_error'):
             alerts.append('The latest backup or restore drill failed. Inspect the backup service before relying on recovery.')
         if os.environ.get('SHEET_INGEST_TOKEN') and not sheet.sync_ok(store):
-            alerts.append('The Google Sheet feed has not synced cleanly in the last 8 hours '
+            alerts.append('The Google Sheet feed has not synced cleanly in the last 4 days '
                           '(' + (store.setting('sheet_sync_error') or 'no recent sync') + '). Check the Make scenario.')
         backup_at = float(store.setting('backup_completed_at') or 0)
         if os.environ.get('QA_BACKUPS_REQUIRED') == 'true' and now-backup_at >= 36*3600:

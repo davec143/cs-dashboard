@@ -1,6 +1,7 @@
 """Mirror of the "Call Evaluation" Google Sheet (Data tab) and the Sheet dashboard's math.
 
-Make reads the Data tab with the Sheets API and posts the whole range here. Every sync
+After each scored call, the Make scenario "Aircall Calls -> Evaluation -> GSheet" reads the
+Data tab with the Sheets API and posts the whole range here. Every sync
 replaces the mirror in one transaction, so the dashboard always equals the sheet: no
 partial states, no drift, rows removed from the sheet disappear here too.
 """
@@ -24,7 +25,9 @@ MAX_CELL = 50_000
 # A sync that would drop more than this share of existing rows is refused: a truncated
 # or wrong-range read must never wipe the dashboard.
 MAX_SHRINK = 0.2
-STALE_AFTER = 8 * 3600
+# Syncs are event-driven (one per scored call), so quiet nights and weekends are normal.
+# Rejected syncs alert immediately via sheet_sync_error; this is only a backstop.
+STALE_AFTER = 4 * 86400
 
 DDL = '''
 CREATE TABLE IF NOT EXISTS sheet_rows (

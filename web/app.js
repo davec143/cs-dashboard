@@ -56,7 +56,7 @@ function sheetStatus() {
  const s=data.sheet;
  if(!s||!s.connected) return `<div class="notice"><div><b>Waiting for the first Sheet sync</b>The Call Evaluation sheet has not been delivered to this dashboard yet.</div></div>`;
  if(s.sync_error) return `<div class="notice"><div><b>Latest Sheet sync was rejected (${esc(s.sync_error)})</b>Showing the last good copy from ${esc(sheetAge(s.last_sync))}. Nothing was overwritten.</div></div>`;
- if(s.stale) return `<div class="notice"><div><b>Sheet sync is overdue</b>Last synced ${esc(sheetAge(s.last_sync))}. Check the Make scenario "Call Evaluation Sheet → CS Dashboard".</div></div>`;
+ if(s.stale) return `<div class="notice"><div><b>Sheet sync is overdue</b>Last synced ${esc(sheetAge(s.last_sync))}. Check the last steps of the Make scenario "Aircall Calls -> Evaluation -> GSheet".</div></div>`;
  return '';
 }
 function sheetOverview() {
