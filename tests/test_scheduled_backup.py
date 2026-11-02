@@ -158,3 +158,14 @@ class ScheduledBackupTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class SafeErrorCodeTests(unittest.TestCase):
+    def test_codes_name_stage_class_and_s3_code_only(self):
+        class ClientError(Exception):
+            def __init__(self):
+                super().__init__('secret https://key@host/bucket')
+                self.response = {'Error': {'Code': 'AccessDenied', 'Message': 'secret'}}
+        self.assertEqual(job.safe_error_code('upload', ClientError()), 'upload:ClientError:AccessDenied')
+        self.assertEqual(job.safe_error_code('dump', RuntimeError('postgres://u:p@h/db')), 'dump:RuntimeError')
+        self.assertEqual(job.safe_error_code('dump', ops.OpsError('postgres_client_failed')), 'postgres_client_failed')
